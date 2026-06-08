@@ -1,27 +1,23 @@
 /*
  * 2D Graphics Editor for Windows Console
- * Uses Windows Console API for colors and cursor control
+ * Uses PDCurses for UI and Mouse interaction
  * Draws using '*' and '_' characters on a 2D canvas
  *
- * Compile: gcc graphics_editor.c -o graphics_editor.exe
- * Run:     graphics_editor.exe
+ * Compile: gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <conio.h>
-#include <windows.h>
+#include <curses.h>
 
 /* ─────────────────────────── CONSTANTS ─────────────────────────── */
 #define CANVAS_W   80
 #define CANVAS_H   40
-#define MAX_OBJECTS 64
+#define MENU_W     20
+#define MAX_OBJECTS 128
 #define EMPTY      ' '
-#define BORDER     '#'
-#define FILL_CHAR  '*'
-#define OUTLINE    '_'
 
 /* ─────────────────────────── TYPES ─────────────────────────── */
 typedef enum {
@@ -34,7 +30,6 @@ typedef enum {
 typedef struct {
     int      id;
     ObjType  type;
-    /* common params */
     int x1, y1;       /* origin / start */
     int x2, y2;       /* end / second point (line, rect) */
     int x3, y3;       /* third point (triangle) */
@@ -43,36 +38,28 @@ typedef struct {
     int      active;  /* 1 = exists, 0 = deleted */
 } Object;
 
+typedef enum {
+    TOOL_NONE,
+    TOOL_LINE,
+    TOOL_RECT,
+    TOOL_CIRCLE,
+    TOOL_TRIANGLE,
+    TOOL_DELETE,
+    TOOL_MODIFY
+} Tool;
+
 /* ─────────────────────────── GLOBALS ─────────────────────────── */
 static char canvas[CANVAS_H][CANVAS_W];
 static Object objects[MAX_OBJECTS];
 static int obj_count   = 0;
 static int next_id     = 1;
-static HANDLE hConsole;
+static float zoom_factor = 1.0f;
 
-/* ─────────────────── WINDOWS CONSOLE HELPERS ─────────────────── */
-static void set_color(WORD attr) {
-    SetConsoleTextAttribute(hConsole, attr);
-}
+static Tool current_tool = TOOL_NONE;
+static int step = 0; /* Interaction step for multi-click tools */
 
-static void gotoxy(int x, int y) {
-    COORD c = { (SHORT)x, (SHORT)y };
-    SetConsoleCursorPosition(hConsole, c);
-}
-
-static void hide_cursor(void) {
-    CONSOLE_CURSOR_INFO ci = { 1, FALSE };
-    SetConsoleCursorInfo(hConsole, &ci);
-}
-
-static void show_cursor(void) {
-    CONSOLE_CURSOR_INFO ci = { 1, TRUE };
-    SetConsoleCursorInfo(hConsole, &ci);
-}
-
-static void clear_screen(void) {
-    system("cls");
-}
+/* Temporary points for drawing */
+static int px1, py1, px2, py2;
 
 /* ─────────────────────────── CANVAS OPS ─────────────────────────── */
 static void canvas_clear(void) {
@@ -81,15 +68,12 @@ static void canvas_clear(void) {
             canvas[r][c] = EMPTY;
 }
 
-/* Safe put — ignores out-of-bounds writes */
 static void canvas_put(int x, int y, char ch) {
     if (x >= 0 && x < CANVAS_W && y >= 0 && y < CANVAS_H)
         canvas[y][x] = ch;
 }
 
 /* ─────────────────────── DRAWING PRIMITIVES ──────────────────────── */
-
-/* Bresenham line */
 static void draw_line(int x0, int y0, int x1, int y1, char ch) {
     int dx  = abs(x1 - x0), dy = abs(y1 - y0);
     int sx  = x0 < x1 ? 1 : -1;
@@ -104,7 +88,6 @@ static void draw_line(int x0, int y0, int x1, int y1, char ch) {
     }
 }
 
-/* Midpoint circle (outline) */
 static void draw_circle(int cx, int cy, int r, char ch) {
     int x = 0, y = r, d = 3 - 2 * r;
     while (x <= y) {
@@ -118,7 +101,6 @@ static void draw_circle(int cx, int cy, int r, char ch) {
     }
 }
 
-/* Rectangle (outline) */
 static void draw_rectangle(int x1, int y1, int x2, int y2, char ch) {
     if (x1 > x2) { int t=x1; x1=x2; x2=t; }
     if (y1 > y2) { int t=y1; y1=y2; y2=t; }
@@ -128,10 +110,7 @@ static void draw_rectangle(int x1, int y1, int x2, int y2, char ch) {
     draw_line(x2, y1, x2, y2, ch);   /* right  */
 }
 
-/* Triangle (3 vertices joined by lines) */
-static void draw_triangle(int x1, int y1,
-                           int x2, int y2,
-                           int x3, int y3, char ch) {
+static void draw_triangle(int x1, int y1, int x2, int y2, int x3, int y3, char ch) {
     draw_line(x1, y1, x2, y2, ch);
     draw_line(x2, y2, x3, y3, ch);
     draw_line(x3, y3, x1, y1, ch);
@@ -140,375 +119,314 @@ static void draw_triangle(int x1, int y1,
 /* ─────────────────────── RENDER ALL OBJECTS ─────────────────────── */
 static void render_objects(void) {
     canvas_clear();
+    int cx = CANVAS_W / 2;
+    int cy = CANVAS_H / 2;
     for (int i = 0; i < obj_count; i++) {
         Object *o = &objects[i];
         if (!o->active) continue;
+        
+        int sx1 = cx + (int)round((o->x1 - cx) * zoom_factor);
+        int sy1 = cy + (int)round((o->y1 - cy) * zoom_factor);
+        int sx2 = cx + (int)round((o->x2 - cx) * zoom_factor);
+        int sy2 = cy + (int)round((o->y2 - cy) * zoom_factor);
+        int sx3 = cx + (int)round((o->x3 - cx) * zoom_factor);
+        int sy3 = cy + (int)round((o->y3 - cy) * zoom_factor);
+        int srad = (int)round(o->radius * zoom_factor);
+
         switch (o->type) {
             case OBJ_CIRCLE:
-                draw_circle(o->x1, o->y1, o->radius, o->ch); break;
+                draw_circle(sx1, sy1, srad, o->ch); break;
             case OBJ_RECTANGLE:
-                draw_rectangle(o->x1, o->y1, o->x2, o->y2, o->ch); break;
+                draw_rectangle(sx1, sy1, sx2, sy2, o->ch); break;
             case OBJ_LINE:
-                draw_line(o->x1, o->y1, o->x2, o->y2, o->ch); break;
+                draw_line(sx1, sy1, sx2, sy2, o->ch); break;
             case OBJ_TRIANGLE:
-                draw_triangle(o->x1, o->y1,
-                              o->x2, o->y2,
-                              o->x3, o->y3, o->ch); break;
+                draw_triangle(sx1, sy1, sx2, sy2, sx3, sy3, o->ch); break;
         }
     }
 }
 
-/* ─────────────────────────── DISPLAY ─────────────────────────── */
-static void display_canvas(void) {
-    clear_screen();
-    /* Top border */
-    set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    printf("+");
-    for (int c = 0; c < CANVAS_W; c++) printf("-");
-    printf("+\n");
-
-    for (int r = 0; r < CANVAS_H; r++) {
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        printf("|");
-        for (int c = 0; c < CANVAS_W; c++) {
-            char ch = canvas[r][c];
-            if (ch == '*') {
-                set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-            } else if (ch == '_') {
-                set_color(FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-            } else {
-                set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-            }
-            putchar(ch);
-        }
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        printf("|\n");
-    }
-
-    /* Bottom border */
-    printf("+");
-    for (int c = 0; c < CANVAS_W; c++) printf("-");
-    printf("+\n");
-    set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+/* Add a new object */
+static void add_object(ObjType type, int x1, int y1, int x2, int y2, int x3, int y3, int r, char ch) {
+    if (obj_count >= MAX_OBJECTS) return;
+    Object *o = &objects[obj_count++];
+    o->id     = next_id++;
+    o->type   = type;
+    o->active = 1;
+    o->x1 = x1; o->y1 = y1;
+    o->x2 = x2; o->y2 = y2;
+    o->x3 = x3; o->y3 = y3;
+    o->radius = r;
+    o->ch = ch;
 }
 
-/* ─────────────────────────── OBJECT LIST ─────────────────────────── */
-static void list_objects(void) {
-    set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-    printf("\n  %-4s %-12s %s\n", "ID", "Type", "Parameters");
-    set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-    printf("  %-4s %-12s %s\n", "--", "----", "----------");
+/* Simple distance helper */
+static float point_dist(int x1, int y1, int x2, int y2) {
+    return sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+}
 
-    int found = 0;
-    for (int i = 0; i < obj_count; i++) {
+/* Check if point is near a line segment */
+static int is_near_line(int px, int py, int x1, int y1, int x2, int y2) {
+    float d1 = point_dist(px, py, x1, y1);
+    float d2 = point_dist(px, py, x2, y2);
+    float len = point_dist(x1, y1, x2, y2);
+    if (d1 + d2 >= len - 1.0f && d1 + d2 <= len + 1.0f) return 1;
+    return 0;
+}
+
+/* Find object near point (for click selection) */
+static Object* find_object_at(int px, int py) {
+    int cx = CANVAS_W / 2;
+    int cy = CANVAS_H / 2;
+    for (int i = obj_count - 1; i >= 0; i--) {
         Object *o = &objects[i];
         if (!o->active) continue;
-        found = 1;
-        const char *tname = "?";
-        switch (o->type) {
-            case OBJ_CIRCLE:    tname = "Circle";    break;
-            case OBJ_RECTANGLE: tname = "Rectangle"; break;
-            case OBJ_LINE:      tname = "Line";      break;
-            case OBJ_TRIANGLE:  tname = "Triangle";  break;
+        
+        int sx1 = cx + (int)round((o->x1 - cx) * zoom_factor);
+        int sy1 = cy + (int)round((o->y1 - cy) * zoom_factor);
+        int sx2 = cx + (int)round((o->x2 - cx) * zoom_factor);
+        int sy2 = cy + (int)round((o->y2 - cy) * zoom_factor);
+        int sx3 = cx + (int)round((o->x3 - cx) * zoom_factor);
+        int sy3 = cy + (int)round((o->y3 - cy) * zoom_factor);
+        int srad = (int)round(o->radius * zoom_factor);
+        
+        if (o->type == OBJ_CIRCLE) {
+            float d = point_dist(px, py, sx1, sy1);
+            if (fabs(d - srad) <= 2.0f) return o;
+        } else if (o->type == OBJ_LINE) {
+            if (is_near_line(px, py, sx1, sy1, sx2, sy2)) return o;
+        } else if (o->type == OBJ_RECTANGLE) {
+            if (is_near_line(px, py, sx1, sy1, sx2, sy1) || is_near_line(px, py, sx1, sy2, sx2, sy2) ||
+                is_near_line(px, py, sx1, sy1, sx1, sy2) || is_near_line(px, py, sx2, sy1, sx2, sy2))
+                return o;
+        } else if (o->type == OBJ_TRIANGLE) {
+            if (is_near_line(px, py, sx1, sy1, sx2, sy2) || is_near_line(px, py, sx2, sy2, sx3, sy3) ||
+                is_near_line(px, py, sx3, sy3, sx1, sy1))
+                return o;
         }
-        printf("  %-4d %-12s ", o->id, tname);
-        switch (o->type) {
-            case OBJ_CIRCLE:
-                printf("cx=%d cy=%d r=%d ch='%c'",
-                        o->x1, o->y1, o->radius, o->ch); break;
-            case OBJ_RECTANGLE:
-                printf("(%d,%d)->(%d,%d) ch='%c'",
-                        o->x1, o->y1, o->x2, o->y2, o->ch); break;
-            case OBJ_LINE:
-                printf("(%d,%d)->(%d,%d) ch='%c'",
-                        o->x1, o->y1, o->x2, o->y2, o->ch); break;
-            case OBJ_TRIANGLE:
-                printf("(%d,%d) (%d,%d) (%d,%d) ch='%c'",
-                        o->x1, o->y1, o->x2, o->y2,
-                        o->x3, o->y3, o->ch); break;
-        }
-        putchar('\n');
     }
-    if (!found) printf("  (no objects)\n");
-}
-
-/* ─────────────────────────── INPUT HELPERS ─────────────────────────── */
-static int read_int(const char *prompt) {
-    int v;
-    printf("  %s: ", prompt);
-    while (scanf("%d", &v) != 1) {
-        printf("  Invalid – enter an integer: ");
-        while (getchar() != '\n');
-    }
-    return v;
-}
-
-static char read_char(const char *prompt) {
-    char buf[8];
-    printf("  %s [* or _] (default *): ", prompt);
-    fflush(stdin);
-    fgets(buf, sizeof(buf), stdin);
-    /* skip leftover newline from previous scanf */
-    if (buf[0] == '\n') {
-        fgets(buf, sizeof(buf), stdin);
-    }
-    return (buf[0] == '_') ? '_' : '*';
-}
-
-/* Flush stdin after scanf */
-static void flush(void) { while (getchar() != '\n'); }
-
-/* ─────────────────── FIND OBJECT BY ID ─────────────────── */
-static Object *find_object(int id) {
-    for (int i = 0; i < obj_count; i++)
-        if (objects[i].id == id && objects[i].active)
-            return &objects[i];
     return NULL;
 }
 
-/* ─────────────────── ADD OPERATIONS ─────────────────── */
-static void add_circle(void) {
-    if (obj_count >= MAX_OBJECTS) { printf("  Canvas full!\n"); return; }
-    Object *o = &objects[obj_count++];
-    o->id     = next_id++;
-    o->type   = OBJ_CIRCLE;
-    o->active = 1;
-    o->x1     = read_int("Center X (0-79)");
-    o->y1     = read_int("Center Y (0-39)");
-    o->radius = read_int("Radius");
-    flush();
-    o->ch     = read_char("Character");
-    printf("  Circle #%d added.\n", o->id);
-}
-
-static void add_rectangle(void) {
-    if (obj_count >= MAX_OBJECTS) { printf("  Canvas full!\n"); return; }
-    Object *o = &objects[obj_count++];
-    o->id     = next_id++;
-    o->type   = OBJ_RECTANGLE;
-    o->active = 1;
-    o->x1     = read_int("Top-left X");
-    o->y1     = read_int("Top-left Y");
-    o->x2     = read_int("Bottom-right X");
-    o->y2     = read_int("Bottom-right Y");
-    flush();
-    o->ch     = read_char("Character");
-    printf("  Rectangle #%d added.\n", o->id);
-}
-
-static void add_line(void) {
-    if (obj_count >= MAX_OBJECTS) { printf("  Canvas full!\n"); return; }
-    Object *o = &objects[obj_count++];
-    o->id     = next_id++;
-    o->type   = OBJ_LINE;
-    o->active = 1;
-    o->x1     = read_int("Start X");
-    o->y1     = read_int("Start Y");
-    o->x2     = read_int("End X");
-    o->y2     = read_int("End Y");
-    flush();
-    o->ch     = read_char("Character");
-    printf("  Line #%d added.\n", o->id);
-}
-
-static void add_triangle(void) {
-    if (obj_count >= MAX_OBJECTS) { printf("  Canvas full!\n"); return; }
-    Object *o = &objects[obj_count++];
-    o->id     = next_id++;
-    o->type   = OBJ_TRIANGLE;
-    o->active = 1;
-    o->x1     = read_int("Vertex 1 X");
-    o->y1     = read_int("Vertex 1 Y");
-    o->x2     = read_int("Vertex 2 X");
-    o->y2     = read_int("Vertex 2 Y");
-    o->x3     = read_int("Vertex 3 X");
-    o->y3     = read_int("Vertex 3 Y");
-    flush();
-    o->ch     = read_char("Character");
-    printf("  Triangle #%d added.\n", o->id);
-}
-
-/* ─────────────────── DELETE OPERATION ─────────────────── */
-static void delete_object(void) {
-    list_objects();
-    int id = read_int("\nEnter ID to delete (0=cancel)");
-    if (id == 0) return;
-    Object *o = find_object(id);
-    if (!o) { printf("  ID %d not found.\n", id); return; }
-    o->active = 0;
-    printf("  Object #%d deleted.\n", id);
-    flush();
-}
-
-/* ─────────────────── MODIFY OPERATION ─────────────────── */
-static void modify_object(void) {
-    list_objects();
-    int id = read_int("\nEnter ID to modify (0=cancel)");
-    if (id == 0) { flush(); return; }
-    Object *o = find_object(id);
-    if (!o) { printf("  ID %d not found.\n", id); flush(); return; }
-    flush();
-
-    printf("\n  Modifying object #%d – enter new values:\n", id);
-    switch (o->type) {
-        case OBJ_CIRCLE:
-            o->x1     = read_int("New Center X");
-            o->y1     = read_int("New Center Y");
-            o->radius = read_int("New Radius");
-            flush();
-            o->ch     = read_char("New Character");
-            break;
-        case OBJ_RECTANGLE:
-            o->x1 = read_int("New Top-left X");
-            o->y1 = read_int("New Top-left Y");
-            o->x2 = read_int("New Bottom-right X");
-            o->y2 = read_int("New Bottom-right Y");
-            flush();
-            o->ch = read_char("New Character");
-            break;
-        case OBJ_LINE:
-            o->x1 = read_int("New Start X");
-            o->y1 = read_int("New Start Y");
-            o->x2 = read_int("New End X");
-            o->y2 = read_int("New End Y");
-            flush();
-            o->ch = read_char("New Character");
-            break;
-        case OBJ_TRIANGLE:
-            o->x1 = read_int("New Vertex 1 X");
-            o->y1 = read_int("New Vertex 1 Y");
-            o->x2 = read_int("New Vertex 2 X");
-            o->y2 = read_int("New Vertex 2 Y");
-            o->x3 = read_int("New Vertex 3 X");
-            o->y3 = read_int("New Vertex 3 Y");
-            flush();
-            o->ch = read_char("New Character");
-            break;
+/* ─────────────────────────── UI RENDERING ─────────────────────────── */
+static void draw_menu(WINDOW *win) {
+    werase(win);
+    box(win, 0, 0);
+    mvwprintw(win, 1, 4, "TOOLS MENU");
+    mvwprintw(win, 2, 1, "------------------");
+    
+    const char *tools[] = {
+        "1: Line", "2: Rectangle", "3: Circle", "4: Triangle", 
+        "5: Delete", "6: Modify Char"
+    };
+    
+    for (int i = 0; i < 6; i++) {
+        if (current_tool == i + 1) wattron(win, A_REVERSE);
+        mvwprintw(win, 4 + i*2, 2, "%s", tools[i]);
+        if (current_tool == i + 1) wattroff(win, A_REVERSE);
     }
-    printf("  Object #%d updated.\n", id);
-}
-
-/* ─────────────────────────── MENUS ─────────────────────────── */
-static void print_header(void) {
-    set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
-    printf("\n  ╔══════════════════════════════════╗\n");
-    printf("  ║     2D GRAPHICS EDITOR  (ASCII)  ║\n");
-    printf("  ╚══════════════════════════════════╝\n");
-    set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-}
-
-static void add_menu(void) {
-    while (1) {
-        clear_screen();
-        print_header();
-        set_color(FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-        printf("\n  ── Add Object ──\n\n");
-        set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-        printf("  1. Circle\n");
-        printf("  2. Rectangle\n");
-        printf("  3. Line\n");
-        printf("  4. Triangle\n");
-        printf("  0. Back\n\n");
-
-        int ch = read_int("Choice");
-        flush();
-        switch (ch) {
-            case 1: add_circle();    break;
-            case 2: add_rectangle(); break;
-            case 3: add_line();      break;
-            case 4: add_triangle();  break;
-            case 0: return;
-            default: printf("  Invalid choice.\n");
-        }
-        printf("\n  Press ENTER to continue...");
-        getchar();
+    
+    mvwprintw(win, 17, 1, "------------------");
+    mvwprintw(win, 19, 2, "+: Zoom In");
+    mvwprintw(win, 21, 2, "-: Zoom Out");
+    mvwprintw(win, 23, 2, "c: Clear Canvas");
+    mvwprintw(win, 25, 2, "q: Quit");
+    
+    mvwprintw(win, 28, 1, "Zoom: %d%%", (int)(zoom_factor * 100));
+    
+    mvwprintw(win, 30, 1, "Status:");
+    switch(current_tool) {
+        case TOOL_NONE: mvwprintw(win, 31, 2, "Idle"); break;
+        case TOOL_LINE: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
+        case TOOL_RECT: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
+        case TOOL_CIRCLE: mvwprintw(win, 31, 2, step==0?"Center":"Radius"); break;
+        case TOOL_TRIANGLE: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
+        case TOOL_DELETE: mvwprintw(win, 31, 2, "Click Object"); break;
+        case TOOL_MODIFY: mvwprintw(win, 31, 2, "Click to toggle"); break;
     }
+    
+    wrefresh(win);
 }
 
-static void main_menu(void) {
-    while (1) {
-        render_objects();
-        display_canvas();
+static void get_base_coord(int zx, int zy, int *bx, int *by);
 
-        set_color(FOREGROUND_RED | FOREGROUND_INTENSITY);
-        printf("\n  ╔══════════════════════════════════╗\n");
-        printf("  ║     2D GRAPHICS EDITOR  (ASCII)  ║\n");
-        printf("  ╚══════════════════════════════════╝\n");
-        set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-        printf("\n  1. Add object\n");
-        printf("  2. Delete object\n");
-        printf("  3. Modify object\n");
-        printf("  4. List objects\n");
-        printf("  5. Clear all\n");
-        printf("  0. Quit\n\n");
-
-        int choice = read_int("Choice");
-        flush();
-
-        switch (choice) {
-            case 1:
-                add_menu();
-                break;
-            case 2:
-                clear_screen();
-                print_header();
-                delete_object();
-                printf("\n  Press ENTER to continue...");
-                getchar();
-                break;
-            case 3:
-                clear_screen();
-                print_header();
-                modify_object();
-                printf("\n  Press ENTER to continue...");
-                getchar();
-                break;
-            case 4:
-                clear_screen();
-                print_header();
-                list_objects();
-                printf("\n  Press ENTER to continue...");
-                getchar();
-                break;
-            case 5:
-                obj_count = 0;
-                next_id   = 1;
-                canvas_clear();
-                printf("  Canvas cleared.\n");
-                Sleep(600);
-                break;
-            case 0:
-                clear_screen();
-                set_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-                printf("  Goodbye!\n\n");
-                show_cursor();
-                exit(0);
-            default:
-                printf("  Invalid choice.\n");
-                Sleep(400);
+static void draw_canvas(WINDOW *win, int mx, int my) {
+    werase(win);
+    render_objects();
+    
+    /* Draw rubber-band preview if in middle of operation */
+    if (current_tool != TOOL_NONE && step > 0) {
+        int cx = mx - 1; /* Adjust for border */
+        int cy = my - 1;
+        
+        int center_x = CANVAS_W / 2;
+        int center_y = CANVAS_H / 2;
+        int spx1 = center_x + (int)round((px1 - center_x) * zoom_factor);
+        int spy1 = center_y + (int)round((py1 - center_y) * zoom_factor);
+        int spx2 = center_x + (int)round((px2 - center_x) * zoom_factor);
+        int spy2 = center_y + (int)round((py2 - center_y) * zoom_factor);
+        
+        if (current_tool == TOOL_LINE && step == 1) {
+            draw_line(spx1, spy1, cx, cy, '+');
+        } else if (current_tool == TOOL_RECT && step == 1) {
+            draw_rectangle(spx1, spy1, cx, cy, '+');
+        } else if (current_tool == TOOL_CIRCLE && step == 1) {
+            int bx, by;
+            get_base_coord(cx, cy, &bx, &by);
+            int base_r = (int)round(point_dist(px1, py1, bx, by));
+            int sr = (int)round(base_r * zoom_factor);
+            draw_circle(spx1, spy1, sr, '+');
+        } else if (current_tool == TOOL_TRIANGLE) {
+            if (step == 1) {
+                draw_line(spx1, spy1, cx, cy, '+');
+            } else if (step == 2) {
+                draw_line(spx1, spy1, spx2, spy2, '*');
+                draw_line(spx2, spy2, cx, cy, '+');
+                draw_line(cx, cy, spx1, spy1, '+');
+            }
         }
     }
+    
+    /* Blit 2D array to ncurses window */
+    for (int r = 0; r < CANVAS_H; r++) {
+        for (int c = 0; c < CANVAS_W; c++) {
+            char ch = canvas[r][c];
+            if (ch != EMPTY) {
+                if (ch == '*') wattron(win, COLOR_PAIR(1) | A_BOLD);
+                else if (ch == '_') wattron(win, COLOR_PAIR(2) | A_BOLD);
+                else wattron(win, COLOR_PAIR(3));
+                
+                mvwaddch(win, r + 1, c + 1, ch);
+                
+                wattroff(win, COLOR_PAIR(1) | A_BOLD);
+                wattroff(win, COLOR_PAIR(2) | A_BOLD);
+                wattroff(win, COLOR_PAIR(3));
+            }
+        }
+    }
+    box(win, 0, 0);
+    wrefresh(win);
+}
+
+/* Adjust un-zoomed coordinate to base coordinate */
+static void get_base_coord(int zx, int zy, int *bx, int *by) {
+    int cx = CANVAS_W / 2;
+    int cy = CANVAS_H / 2;
+    *bx = cx + (int)round((zx - cx) / zoom_factor);
+    *by = cy + (int)round((zy - cy) / zoom_factor);
 }
 
 /* ─────────────────────────── MAIN ─────────────────────────── */
 int main(void) {
-    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-
-    /* Make the console window large enough */
-    SMALL_RECT sr = { 0, 0, 100, 55 };
-    SetConsoleWindowInfo(hConsole, TRUE, &sr);
-    COORD cs = { 101, 56 };
-    SetConsoleScreenBufferSize(hConsole, cs);
-
-    hide_cursor();
-    canvas_clear();
-
-    /* Seed with a demo scene */
-    objects[obj_count++] = (Object){next_id++, OBJ_RECTANGLE, 2, 2, 20, 12, 0, 0, 0, '*', 1};
-    objects[obj_count++] = (Object){next_id++, OBJ_CIRCLE,    50, 20, 0,  0, 0, 0, 8, '_', 1};
-    objects[obj_count++] = (Object){next_id++, OBJ_LINE,       5, 35, 75, 5, 0, 0, 0, '*', 1};
-    objects[obj_count++] = (Object){next_id++, OBJ_TRIANGLE,  10, 38, 30, 22, 50, 38, 0, '_', 1};
-
-    main_menu();
+    system("mode con: cols=105 lines=45");
+    
+    initscr();
+    cbreak();
+    noecho();
+    keypad(stdscr, TRUE);
+    nodelay(stdscr, TRUE);
+    curs_set(0);
+    
+    if (has_colors()) {
+        start_color();
+        init_pair(1, COLOR_RED, COLOR_BLACK);
+        init_pair(2, COLOR_BLUE, COLOR_BLACK);
+        init_pair(3, COLOR_YELLOW, COLOR_BLACK);
+    }
+    
+    mouse_set(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION);
+    
+    WINDOW *menu_win = newwin(CANVAS_H + 2, MENU_W, 0, 0);
+    WINDOW *canvas_win = newwin(CANVAS_H + 2, CANVAS_W + 2, 0, MENU_W);
+    
+    /* Seed with demo */
+    add_object(OBJ_RECTANGLE, 2, 2, 20, 12, 0, 0, 0, '*');
+    add_object(OBJ_CIRCLE, 50, 20, 0, 0, 0, 0, 8, '_');
+    
+    int mx = 0, my = 0;
+    int running = 1;
+    
+    while (running) {
+        draw_menu(menu_win);
+        draw_canvas(canvas_win, mx, my);
+        
+        int ch = getch();
+        if (ch == ERR) {
+            napms(16); /* ~60fps */
+            continue;
+        }
+        
+        if (ch == 'q' || ch == 'Q') running = 0;
+        else if (ch == '+') zoom_factor += 0.25f;
+        else if (ch == '-') { if (zoom_factor > 0.25f) zoom_factor -= 0.25f; }
+        else if (ch == 'c' || ch == 'C') { obj_count = 0; step = 0; }
+        else if (ch >= '1' && ch <= '6') {
+            current_tool = (Tool)(ch - '0');
+            step = 0;
+        }
+        else if (ch == KEY_MOUSE) {
+            if (request_mouse_pos() == OK) {
+                /* Map global mouse coords to window */
+                int gx = Mouse_status.x;
+                int gy = Mouse_status.y;
+                
+                if (Mouse_status.changes & MOUSE_MOVED) {
+                    /* Hovering updates mx, my if inside canvas */
+                    if (gx > MENU_W && gx <= MENU_W + CANVAS_W && gy > 0 && gy <= CANVAS_H) {
+                        mx = gx - MENU_W;
+                        my = gy;
+                    }
+                } else if (Mouse_status.button[0] & BUTTON_PRESSED || Mouse_status.button[0] & BUTTON_CLICKED) {
+                    /* Left Click */
+                    if (gx < MENU_W) {
+                        /* Clicked on menu area */
+                        int row = gy;
+                        if (row == 4) current_tool = TOOL_LINE;
+                        else if (row == 6) current_tool = TOOL_RECT;
+                        else if (row == 8) current_tool = TOOL_CIRCLE;
+                        else if (row == 10) current_tool = TOOL_TRIANGLE;
+                        else if (row == 12) current_tool = TOOL_DELETE;
+                        else if (row == 14) current_tool = TOOL_MODIFY;
+                        step = 0;
+                    } else if (gx > MENU_W && gx <= MENU_W + CANVAS_W && gy > 0 && gy <= CANVAS_H) {
+                        /* Clicked on Canvas */
+                        int cx = gx - MENU_W - 1; /* 0-based canvas coords */
+                        int cy = gy - 1;
+                        int bx, by;
+                        get_base_coord(cx, cy, &bx, &by);
+                        
+                        if (current_tool == TOOL_LINE) {
+                            if (step == 0) { px1 = bx; py1 = by; step = 1; }
+                            else { add_object(OBJ_LINE, px1, py1, bx, by, 0, 0, 0, '*'); step = 0; }
+                        } else if (current_tool == TOOL_RECT) {
+                            if (step == 0) { px1 = bx; py1 = by; step = 1; }
+                            else { add_object(OBJ_RECTANGLE, px1, py1, bx, by, 0, 0, 0, '*'); step = 0; }
+                        } else if (current_tool == TOOL_CIRCLE) {
+                            if (step == 0) { px1 = bx; py1 = by; step = 1; }
+                            else {
+                                int r = (int)round(point_dist(px1, py1, bx, by));
+                                add_object(OBJ_CIRCLE, px1, py1, 0, 0, 0, 0, r, '*');
+                                step = 0;
+                            }
+                        } else if (current_tool == TOOL_TRIANGLE) {
+                            if (step == 0) { px1 = bx; py1 = by; step = 1; }
+                            else if (step == 1) { px2 = bx; py2 = by; step = 2; }
+                            else { add_object(OBJ_TRIANGLE, px1, py1, px2, py2, bx, by, 0, '*'); step = 0; }
+                        } else if (current_tool == TOOL_DELETE) {
+                            Object *o = find_object_at(cx, cy);
+                            if (o) o->active = 0;
+                        } else if (current_tool == TOOL_MODIFY) {
+                            Object *o = find_object_at(cx, cy);
+                            if (o) {
+                                o->ch = (o->ch == '*') ? '_' : (o->ch == '_' ? '#' : '*');
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    endwin();
     return 0;
 }
