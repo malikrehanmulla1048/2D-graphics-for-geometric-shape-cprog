@@ -12,6 +12,7 @@ The program runs inside the terminal window itself, so the drawing area is not a
 - Delete objects using their object ID.
 - List all created objects with coordinates and parameters.
 - Show an ASCII canvas whenever the main menu is displayed.
+- Reset the demo scene quickly with the new `r` shortcut and clear the canvas cleanly with `c`.
 
 ## Requirements
 
@@ -21,17 +22,29 @@ To build and run this program on Windows, use:
 - PowerShell, Command Prompt, Windows Terminal, or VS Code terminal
 - The source file: `graphics_editor.c`
 
-This version uses the **Windows Console API** (`windows.h`) and does not require `ncurses` or `pdcurses`.
+This version uses **PDCurses** for Windows console rendering and mouse input, so the build depends on a curses-compatible library in your toolchain.
 
 ## Compile
 
 Open PowerShell or the VS Code terminal in the folder containing `graphics_editor.c`, then run:
 
 ```powershell
-gcc graphics_editor.c -o graphics_editor.exe
+gcc -Wall -Wextra graphics_editor.c -lpdcurses -o graphics_editor.exe
 ```
 
 If compilation succeeds, it creates `graphics_editor.exe` in the current folder.
+
+You can also use the included helper script:
+
+```powershell
+.\run_windows.cmd
+```
+
+Or use the simple Makefile target for a clean rebuild:
+
+```powershell
+make
+```
 
 ## Run
 

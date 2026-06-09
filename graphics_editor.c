@@ -3,7 +3,8 @@
  * Uses PDCurses for UI and Mouse interaction
  * Draws using '*' and '_' characters on a 2D canvas
  *
- * Compile: gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
+ * Windows terminal build command:
+ *   gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
  */
 
 #include <stdio.h>
@@ -160,6 +161,18 @@ static void add_object(ObjType type, int x1, int y1, int x2, int y2, int x3, int
     o->ch = ch;
 }
 
+static void reset_demo_scene(void) {
+    obj_count = 0;
+    next_id = 1;
+    current_tool = TOOL_NONE;
+    step = 0;
+    zoom_factor = 1.0f;
+    canvas_clear();
+
+    add_object(OBJ_RECTANGLE, 2, 2, 20, 12, 0, 0, 0, '*');
+    add_object(OBJ_CIRCLE, 50, 20, 0, 0, 0, 0, 8, '_');
+}
+
 /* Simple distance helper */
 static float point_dist(int x1, int y1, int x2, int y2) {
     return sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
@@ -221,28 +234,32 @@ static void draw_menu(WINDOW *win) {
     };
     
     for (int i = 0; i < 6; i++) {
-        if (current_tool == i + 1) wattron(win, A_REVERSE);
+        int tool_id = i + 1;
+        if (current_tool == (Tool)tool_id) wattron(win, A_REVERSE);
         mvwprintw(win, 4 + i*2, 2, "%s", tools[i]);
-        if (current_tool == i + 1) wattroff(win, A_REVERSE);
+        if (current_tool == (Tool)tool_id) wattroff(win, A_REVERSE);
     }
     
     mvwprintw(win, 17, 1, "------------------");
     mvwprintw(win, 19, 2, "+: Zoom In");
     mvwprintw(win, 21, 2, "-: Zoom Out");
-    mvwprintw(win, 23, 2, "c: Clear Canvas");
-    mvwprintw(win, 25, 2, "q: Quit");
+    mvwprintw(win, 23, 2, "c: Clear All");
+    mvwprintw(win, 25, 2, "r: Demo Scene");
+    mvwprintw(win, 27, 2, "q: Quit");
     
-    mvwprintw(win, 28, 1, "Zoom: %d%%", (int)(zoom_factor * 100));
+    mvwprintw(win, 29, 1, "Objects: %d", obj_count);
+    mvwprintw(win, 30, 1, "Next ID: %d", next_id);
+    mvwprintw(win, 31, 1, "Zoom: %d%%", (int)(zoom_factor * 100));
     
-    mvwprintw(win, 30, 1, "Status:");
+    mvwprintw(win, 33, 1, "Status:");
     switch(current_tool) {
-        case TOOL_NONE: mvwprintw(win, 31, 2, "Idle"); break;
-        case TOOL_LINE: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
-        case TOOL_RECT: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
-        case TOOL_CIRCLE: mvwprintw(win, 31, 2, step==0?"Center":"Radius"); break;
-        case TOOL_TRIANGLE: mvwprintw(win, 31, 2, "Click P%d", step+1); break;
-        case TOOL_DELETE: mvwprintw(win, 31, 2, "Click Object"); break;
-        case TOOL_MODIFY: mvwprintw(win, 31, 2, "Click to toggle"); break;
+        case TOOL_NONE: mvwprintw(win, 34, 2, "Idle"); break;
+        case TOOL_LINE: mvwprintw(win, 34, 2, "Click P%d", step+1); break;
+        case TOOL_RECT: mvwprintw(win, 34, 2, "Click P%d", step+1); break;
+        case TOOL_CIRCLE: mvwprintw(win, 34, 2, step==0?"Center":"Radius"); break;
+        case TOOL_TRIANGLE: mvwprintw(win, 34, 2, "Click P%d", step+1); break;
+        case TOOL_DELETE: mvwprintw(win, 34, 2, "Click Object"); break;
+        case TOOL_MODIFY: mvwprintw(win, 34, 2, "Click to toggle"); break;
     }
     
     wrefresh(win);
@@ -339,9 +356,8 @@ int main(void) {
     WINDOW *menu_win = newwin(CANVAS_H + 2, MENU_W, 0, 0);
     WINDOW *canvas_win = newwin(CANVAS_H + 2, CANVAS_W + 2, 0, MENU_W);
     
-    /* Seed with demo */
-    add_object(OBJ_RECTANGLE, 2, 2, 20, 12, 0, 0, 0, '*');
-    add_object(OBJ_CIRCLE, 50, 20, 0, 0, 0, 0, 8, '_');
+    /* Seed with the built-in demo scene */
+    reset_demo_scene();
     
     int mx = 0, my = 0;
     int running = 1;
@@ -359,7 +375,15 @@ int main(void) {
         if (ch == 'q' || ch == 'Q') running = 0;
         else if (ch == '+') zoom_factor += 0.25f;
         else if (ch == '-') { if (zoom_factor > 0.25f) zoom_factor -= 0.25f; }
-        else if (ch == 'c' || ch == 'C') { obj_count = 0; step = 0; }
+        else if (ch == 'c' || ch == 'C') {
+            obj_count = 0;
+            next_id = 1;
+            current_tool = TOOL_NONE;
+            step = 0;
+        }
+        else if (ch == 'r' || ch == 'R') {
+            reset_demo_scene();
+        }
         else if (ch >= '1' && ch <= '6') {
             current_tool = (Tool)(ch - '0');
             step = 0;
