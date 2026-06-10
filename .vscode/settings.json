@@ -1,0 +1,8 @@
+{
+  "C_Cpp.includePaths": [
+    "${workspaceFolder}",
+    "C:/mingw64/include"
+  ],
+  "C_Cpp.compilerPath": "C:\\MinGW\\bin\\gcc.exe",
+  "C_Cpp.intelliSenseMode": "windows-gcc-x64"
+}
