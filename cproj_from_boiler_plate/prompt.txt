@@ -1,0 +1,198 @@
+2D Graphics Editor in C — Single-File Terminal (Boilerplate Version)
+A fully interactive, menu-driven 2D graphics editor that runs in a standard terminal (stdout).
+It lets the user add, delete, modify, and display geometric shapes (Line, Rectangle, Circle,
+Triangle)
+drawn using ASCII characters ('*' for pixels, '_' for empty space) on a 80×24 character canvas.
+All shapes are stored in an in-memory object array and re-rendered on every change.
+"Write a 2D graphics editor in C that runs in the terminal using only standard I/O
+(printf/scanf).
+The program should maintain an 80×24 character canvas using a 2D array of chars.
+It must support adding, deleting, and modifying 4 types of shapes:
+Line (Bresenham's algorithm), Rectangle (4 line edges),
+Circle (Midpoint circle algorithm), and Triangle (3 connected lines).
+Each shape should be stored as an object in an array (max 100 objects), with a type
+enum and up to 6 integer parameters.
+Provide a text menu with options: Add Object, Delete Object, Modify Object, Display
+Picture, List Objects, Exit.
+After every add/delete/modify, redraw all objects from scratch onto the cleared canvas.
+No external libraries — only stdio, stdlib, and math.h."
+Feature Implementation
+Canvas size 80 × 24 chars (#define WIDTH 80, #define HEIGHT 24)
+Empty cell '_' (EMPTY), drawn pixel: '*' (PIXEL)
+Max objects 100 (#define MAX_OBJECTS 100)
+Shape types enum: SHAPE_LINE=1, SHAPE_RECT, SHAPE_CIRCLE, SHAPE_TRIANGLE
+Line drawing Bresenham's line algorithm
+Circle drawing Midpoint circle algorithm
+PROMPT FILE — Folder: cproj_from_boiler_plate
+Project Title
+What This Project Does
+The Original Prompt (How This Was Asked / Could Be Asked)
+Key Technical Details from the Code
+Feature Implementation
+Object struct { ShapeType type; int params[6]; }
+Redraw strategy redrawAll() — clears canvas and re-draws all stored objects
+Build & run gcc graphics.c -lm -o graphics && ./graphics
+Input/output Pure scanf / printf — no GUI, no curses
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#define WIDTH 80
+#define HEIGHT 24
+#define EMPTY '_'
+#define PIXEL '*'
+#define MAX_OBJECTS 100
+char picture[HEIGHT][WIDTH];
+void clearPicture() {
+for (int y = 0; y < HEIGHT; y++)
+for (int x = 0; x < WIDTH; x++)
+picture[y][x] = EMPTY;
+}
+void displayPicture() {
+for (int y = 0; y < HEIGHT; y++) {
+for (int x = 0; x < WIDTH; x++)
+putchar(picture[y][x]);
+putchar('\n');
+}
+}
+void setPixel(int x, int y) {
+if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT)
+picture[y][x] = PIXEL;
+}
+void drawLine(int x1, int y1, int x2, int y2) {
+int dx = abs(x2 - x1), dy = abs(y2 - y1);
+int sx = (x1 < x2) ? 1 : -1;
+int sy = (y1 < y2) ? 1 : -1;
+int err = dx - dy;
+while (1) {
+setPixel(x1, y1);
+if (x1 == x2 && y1 == y2) break;
+int e2 = 2 * err;
+if (e2 > -dy) { err -= dy; x1 += sx; }
+if (e2 < dx) { err += dx; y1 += sy; }
+}
+Program: cproj_from_boiler_plate/graphics.c
+}
+void drawRectangle(int x1, int y1, int x2, int y2) {
+drawLine(x1, y1, x2, y1);
+drawLine(x1, y2, x2, y2);
+drawLine(x1, y1, x1, y2);
+drawLine(x2, y1, x2, y2);
+}
+void drawCircle(int cx, int cy, int radius) {
+int x = 0, y = radius;
+int d = 1 - radius;
+while (x <= y) {
+setPixel(cx + x, cy + y); setPixel(cx - x, cy + y);
+setPixel(cx + x, cy - y); setPixel(cx - x, cy - y);
+setPixel(cx + y, cy + x); setPixel(cx - y, cy + x);
+setPixel(cx + y, cy - x); setPixel(cx - y, cy - x);
+if (d < 0) d += 2 * x + 3;
+else { d += 2 * (x - y) + 5; y--; }
+x++;
+}
+}
+void drawTriangle(int x1, int y1, int x2, int y2, int x3, int y3) {
+drawLine(x1, y1, x2, y2);
+drawLine(x2, y2, x3, y3);
+drawLine(x3, y3, x1, y1);
+}
+typedef enum { SHAPE_LINE = 1, SHAPE_RECT, SHAPE_CIRCLE, SHAPE_TRIANGLE } ShapeType;
+typedef struct {
+ShapeType type;
+int params[6];
+} Object;
+Object objects[MAX_OBJECTS];
+int objectCount = 0;
+void redrawAll() {
+clearPicture();
+for (int i = 0; i < objectCount; i++) {
+Object *o = &objects[i];
+switch (o->type) {
+case SHAPE_LINE: drawLine(o->params[0], o->params[1], o->params[2], o
+case SHAPE_RECT: drawRectangle(o->params[0], o->params[1], o->params[
+case SHAPE_CIRCLE: drawCircle(o->params[0], o->params[1], o->params[2])
+case SHAPE_TRIANGLE: drawTriangle(o->params[0], o->params[1], o->params[2
+}
+}
+}
+void printMainMenu() {
+printf("\n2D Graphics Editor\n");
+printf("Canvas size: %d x %d\n", WIDTH, HEIGHT);
+printf("1. Add object\n2. Delete object\n3. Modify object\n4. Display picture\n5
+printf("Enter choice: ");
+}
+void printShapeMenu() {
+printf("\nChoose shape type:\n1. Line\n2. Rectangle\n3. Circle\n4. Triangle\nEnte
+}
+int main() {
+clearPicture();
+int choice;
+while (1) {
+printMainMenu();
+scanf("%d", &choice);
+if (choice == 1) {
+printShapeMenu();
+int shapeType; scanf("%d", &shapeType);
+Object o; o.type = (ShapeType)shapeType;
+if (shapeType == SHAPE_LINE) {
+printf("Enter x1 y1 x2 y2: ");
+scanf("%d %d %d %d", &o.params[0], &o.params[1], &o.params[2], &o.par
+} else if (shapeType == SHAPE_RECT) {
+printf("Enter top-left x y and bottom-right x y: ");
+scanf("%d %d %d %d", &o.params[0], &o.params[1], &o.params[2], &o.par
+} else if (shapeType == SHAPE_CIRCLE) {
+printf("Enter center x y and radius: ");
+scanf("%d %d %d", &o.params[0], &o.params[1], &o.params[2]);
+} else if (shapeType == SHAPE_TRIANGLE) {
+printf("Enter x1 y1 x2 y2 x3 y3: ");
+scanf("%d %d %d %d %d %d", &o.params[0], &o.params[1], &o.params[2],
+} else { printf("Invalid shape type.\n"); continue; }
+if (objectCount < MAX_OBJECTS) {
+objects[objectCount] = o;
+printf("Object added with index %d.\n", objectCount);
+objectCount++;
+redrawAll();
+} else printf("Object store full.\n");
+} else if (choice == 2) {
+printf("Enter index to delete: "); int idx; scanf("%d", &idx);
+if (idx < 0 || idx >= objectCount) { printf("Invalid index.\n"); }
+else { for (int i = idx; i < objectCount - 1; i++) objects[i] = objects[i
+} else if (choice == 3) {
+printf("Enter index to modify: "); int idx; scanf("%d", &idx);
+if (idx < 0 || idx >= objectCount) { printf("Invalid index.\n"); continue
+printShapeMenu(); int shapeType; scanf("%d", &shapeType);
+Object o; o.type = (ShapeType)shapeType;
+if (shapeType == SHAPE_LINE) { printf("Enter x1 y1 x2 y2: "); scanf("%d %
+else if (shapeType == SHAPE_RECT) { printf("Enter top-left x y and bottom
+else if (shapeType == SHAPE_CIRCLE) { printf("Enter center x y and radius
+else if (shapeType == SHAPE_TRIANGLE) { printf("Enter x1 y1 x2 y2 x3 y3:
+else { printf("Invalid shape type.\n"); continue; }
+objects[idx] = o; printf("Object %d modified.\n", idx); redrawAll();
+} else if (choice == 4) { printf("\n"); displayPicture(); }
+else if (choice == 5) {
+if (objectCount == 0) { printf("No objects.\n"); }
+else {
+for (int i = 0; i < objectCount; i++) {
+Object *o = &objects[i];
+printf("[%d] ", i);
+switch (o->type) {
+case SHAPE_LINE: printf("Line (%d,%d)->(%d,%d)\n", o->par
+case SHAPE_RECT: printf("Rectangle (%d,%d)->(%d,%d)\n", o
+case SHAPE_CIRCLE: printf("Circle center(%d,%d) r=%d\n", ocase SHAPE_TRIANGLE: printf("Triangle (%d,%d),(%d,%d),(%d,%d)
+}
+}
+}
+} else if (choice == 0) { printf("Goodbye.\n"); break; }
+else printf("Invalid choice.\n");
+}
+return 0;
+}
+gcc graphics.c -lm -o graphics
+./graphics
+Boilerplate / single-file pattern: Everything in one .c file — no headers, no Makefile.
+Object array with enum type tag: A flat array of Object structs, each tagged with a
+ShapeType enum.
+Full-redraw rendering: On every state change, the canvas is cleared and all objects redrawn from scratch.
+stdin/stdout only: Pure portable C — compiles on Linux, macOS, WSL, any POSIX system.
+How to Compile & Run
+Design Pattern Used
