@@ -1,0 +1,211 @@
+2D Graphics Editor in C — Windows Console with PDCurses, Mouse Input & Zoom
+An advanced, real-time 2D graphics editor that runs in the Windows terminal using PDCurses.
+It splits the console into a side-by-side Tools Menu panel (20 cols) and a Canvas panel (80×40
+chars).
+The user draws shapes by clicking directly on the canvas with the mouse.
+Supports rubber-band preview lines, zoom in/out, a demo scene, object deletion/modification
+by click,
+and colored character rendering (red *, blue _, yellow other).
+This is the production-grade, Windows-native upgrade of the boilerplate version.
+PROMPT FILE — Folder: cproj_running_on_windows_cmd
+Project Title
+What This Project Does
+The Original Prompt (How This Was Asked / Could Be Asked)
+"Upgrade the single-file 2D graphics editor in C to a full Windows console application
+using PDCurses.
+Requirements:
+Split the terminal into two panels: a 20-column tools menu on the left and an 80×40
+canvas on the right.
+Support mouse click input — user clicks on canvas to place shape anchor points.
+Show a rubber-band preview line/shape as the user hovers before completing
+placement.
+Support zoom in (+) and zoom out (-) by scaling all object coordinates from the
+canvas center.
+Store objects with an active flag so they can be soft-deleted without shrinking the
+array.
+Support 4 shapes: Line, Rectangle, Circle, Triangle — placed via 2–3 mouse clicks
+each.
+Add a Delete tool (click to remove shape) and a Modify tool (click to cycle drawing
+character: * → _ → #).
+Include a demo scene (pre-filled with a rectangle and circle) loaded at startup with
+'r'.
+Render with PDCurses color pairs: red for '*', blue for '_', yellow for others.
+Compile with: gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
+Also provide a separate canvas.c / canvas.h module and a Makefile.
+Provide a run_windows.cmd batch script to compile and launch automatically."
+Feature Implementation
+Canvas size 80 × 40 chars (CANVAS_W, CANVAS_H)
+Menu panel width 20 cols (MENU_W)
+Max objects 128 (MAX_OBJECTS), with active flag (soft delete)
+Shape types enum: OBJ_CIRCLE=1, OBJ_RECTANGLE, OBJ_LINE, OBJ_TRIANGLE
+Tools
+enum: TOOL_LINE, TOOL_RECT, TOOL_CIRCLE, TOOL_TRIANGLE, TOOL_DELETE,
+TOOL_MODIFY
+Drawing chars '*' (red), '_' (blue), '#' (yellow via COLOR_PAIR)
+Mouse support PDCurses mouse_set(ALL_MOUSE_EVENTS), request_mouse_pos()
+Rubber-band
+preview
+Temp '+' lines re-drawn each frame while step > 0
+Zoom zoom_factor float, scales all coords from center via round((x - cx) * zoom_factor)
+Key Technical Details from the Code
+Feature Implementation
+Object selection find_object_at(px, py) — proximity check per shape type
+Build gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
+Separate module canvas.c / canvas.h for canvas ops
+Makefile Provided in folder
+Windows batch run_windows.cmd — compile + launch in one step
+File Purpose
+graphics_editor.c Main program — all tools, mouse loop, render logic
+canvas.c Canvas helper functions (clear, put pixel)
+canvas.h Header for canvas module
+Makefile Build rules for gcc + pdcurses
+run_windows.cmd Batch script: compile & run on Windows
+mouse_test2.c Standalone PDCurses mouse event test
+.gitignore Ignores compiled .exe files
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <curses.h>
+#define CANVAS_W 80
+#define CANVAS_H 40
+#define MENU_W 20
+#define MAX_OBJECTS 128
+#define EMPTY ' '
+typedef enum { OBJ_CIRCLE=1, OBJ_RECTANGLE, OBJ_LINE, OBJ_TRIANGLE } ObjType;
+typedef struct {
+int id, active;
+ObjType type;
+int x1, y1, x2, y2, x3, y3, radius;
+char ch;
+} Object;
+typedef enum { TOOL_NONE, TOOL_LINE, TOOL_RECT, TOOL_CIRCLE,
+TOOL_TRIANGLE, TOOL_DELETE, TOOL_MODIFY } Tool;
+Files in This Folder
+Core Program Sketch: graphics_editor.c
+static char canvas[CANVAS_H][CANVAS_W];
+static Object objects[MAX_OBJECTS];
+static int obj_count = 0, next_id = 1;
+static float zoom_factor = 1.0f;
+static Tool current_tool = TOOL_NONE;
+static int step = 0, px1, py1, px2, py2;
+// --- Canvas Ops ---
+static void canvas_clear(void) {
+for (int r=0; r<CANVAS_H; r++)
+for (int c=0; c<CANVAS_W; c++)
+canvas[r][c] = EMPTY;
+}
+static void canvas_put(int x, int y, char ch) {
+if (x>=0 && x<CANVAS_W && y>=0 && y<CANVAS_H) canvas[y][x] = ch;
+}
+// --- Bresenham Line ---
+static void draw_line(int x0, int y0, int x1, int y1, char ch) {
+int dx=abs(x1-x0), dy=abs(y1-y0);
+int sx=x0<x1?1:-1, sy=y0<y1?1:-1;
+int err=dx-dy, e2;
+for(;;) {
+canvas_put(x0, y0, ch);
+if(x0==x1 && y0==y1) break;
+e2=2*err;
+if(e2>-dy){err-=dy; x0+=sx;}
+if(e2< dx){err+=dx; y0+=sy;}
+}
+}
+// --- Midpoint Circle ---
+static void draw_circle(int cx, int cy, int r, char ch) {
+int x=0, y=r, d=3-2*r;
+while(x<=y) {
+canvas_put(cx+x,cy+y,ch); canvas_put(cx-x,cy+y,ch);
+canvas_put(cx+x,cy-y,ch); canvas_put(cx-x,cy-y,ch);
+canvas_put(cx+y,cy+x,ch); canvas_put(cx-y,cy+x,ch);
+canvas_put(cx+y,cy-x,ch); canvas_put(cx-y,cy-x,ch);
+if(d<0) d+=4*x+6; else {d+=4*(x-y)+10; y--;} x++;
+}
+}
+// --- Rectangle ---
+static void draw_rectangle(int x1, int y1, int x2, int y2, char ch) {
+if(x1>x2){int t=x1;x1=x2;x2=t;} if(y1>y2){int t=y1;y1=y2;y2=t;}
+draw_line(x1,y1,x2,y1,ch); draw_line(x1,y2,x2,y2,ch);
+draw_line(x1,y1,x1,y2,ch); draw_line(x2,y1,x2,y2,ch);
+}
+// --- Add Object ---
+static void add_object(ObjType type, int x1, int y1, int x2, int y2,
+int x3, int y3, int r, char ch) {
+if(obj_count>=MAX_OBJECTS) return;
+Object *o = &objects[obj_count++];
+o->id=next_id++; o->type=type; o->active=1;
+o->x1=x1; o->y1=y1; o->x2=x2; o->y2=y2;
+o->x3=x3; o->y3=y3; o->radius=r; o->ch=ch;
+}
+// --- Zoom Coordinate Transform ---
+static void get_base_coord(int zx, int zy, int *bx, int *by) {
+int cx=CANVAS_W/2, cy=CANVAS_H/2;
+*bx = cx + (int)round((zx-cx)/zoom_factor);
+*by = cy + (int)round((zy-cy)/zoom_factor);
+}
+// --- Render All (with zoom) ---
+static void render_objects(void) {
+canvas_clear();
+int cx=CANVAS_W/2, cy=CANVAS_H/2;
+for(int i=0; i<obj_count; i++) {
+Object *o = &objects[i];
+if(!o->active) continue;
+int sx1=cx+(int)round((o->x1-cx)*zoom_factor);
+int sy1=cy+(int)round((o->y1-cy)*zoom_factor);
+int sx2=cx+(int)round((o->x2-cx)*zoom_factor);
+int sy2=cy+(int)round((o->y2-cy)*zoom_factor);
+int sx3=cx+(int)round((o->x3-cx)*zoom_factor);
+int sy3=cy+(int)round((o->y3-cy)*zoom_factor);
+int srad=(int)round(o->radius*zoom_factor);
+switch(o->type) {
+case OBJ_CIRCLE: draw_circle(sx1,sy1,srad,o->ch); break;
+case OBJ_RECTANGLE: draw_rectangle(sx1,sy1,sx2,sy2,o->ch); break;
+case OBJ_LINE: draw_line(sx1,sy1,sx2,sy2,o->ch); break;
+case OBJ_TRIANGLE: draw_line(sx1,sy1,sx2,sy2,o->ch);
+draw_line(sx2,sy2,sx3,sy3,o->ch);
+draw_line(sx3,sy3,sx1,sy1,o->ch); break;
+}
+}
+}
+// main() — PDCurses init, two WINDOW panels, event loop with
+// keyboard (1-6, +, -, c, r, q) and mouse click handling.
+// See full source in the repo for complete main().
+int main(void) {
+system("mode con: cols=105 lines=45");
+initscr(); cbreak(); noecho(); keypad(stdscr,TRUE);
+nodelay(stdscr,TRUE); curs_set(0);
+if(has_colors()){
+start_color();
+init_pair(1,COLOR_RED,COLOR_BLACK);
+init_pair(2,COLOR_BLUE,COLOR_BLACK);
+init_pair(3,COLOR_YELLOW,COLOR_BLACK);
+}
+mouse_set(ALL_MOUSE_EVENTS|REPORT_MOUSE_POSITION);
+WINDOW *menu_win = newwin(CANVAS_H+2, MENU_W, 0, 0);
+WINDOW *canvas_win = newwin(CANVAS_H+2, CANVAS_W+2, 0, MENU_W);
+// ... event loop (see graphics_editor.c for full code)
+endwin();
+return 0;
+}
+Windows (PDCurses required):
+gcc graphics_editor.c -lpdcurses -o graphics_editor.exe
+graphics_editor.exe
+Or use the batch file:
+run_windows.cmd
+With Makefile:
+make
+Multi-panel TUI: Two WINDOW* panels managed by PDCurses (ncurses-compatible).
+Soft-delete with active flag: Objects are never shifted out of array — active=0 marks
+deletion.
+State machine for multi-click drawing: step counter (0,1,2) tracks how many anchor points
+collected.
+Zoom via coordinate transform: All coordinates stored in base (un-zoomed) space; scaled
+on render.
+Rubber-band preview: Each render frame re-draws temp '+' lines from last anchor to
+mouse cursor.
+Proximity-based click selection: find_object_at() checks geometric distance to each
+stored object.
+Modular split: Canvas operations extracted to canvas.c/canvas.h for separation of
+concerns.
+How to Compile & Run
+Design Patterns Used
